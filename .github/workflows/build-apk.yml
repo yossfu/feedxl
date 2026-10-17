@@ -14,12 +14,11 @@ jobs:
       - name: Restore Android project from source archive
         shell: bash
         run: |
-          set +e
+          set -eu
           base64 -d feedxl-source.zip.b64 > /tmp/feedxl-source.zip
-          unzip -o /tmp/feedxl-source.zip -d .
-          unzip_rc=$?
-          echo "unzip exit code: $unzip_rc (known damaged archive entry is being bypassed)"
-          mkdir -p app
+          # The uploaded archive contains a damaged entry, but the other files are recoverable.
+          unzip -o /tmp/feedxl-source.zip -d . || true
+          mkdir -p app/src/main
           cat > app/build.gradle <<'GRADLE'
           plugins {
               id 'com.android.application' version '8.5.2'
@@ -38,12 +37,8 @@ jobs:
               }
 
               buildTypes {
-                  debug {
-                      applicationIdSuffix ''
-                  }
-                  release {
-                      minifyEnabled false
-                  }
+                  debug { applicationIdSuffix '' }
+                  release { minifyEnabled false }
               }
 
               compileOptions {
@@ -56,89 +51,16 @@ jobs:
               implementation 'androidx.webkit:webkit:1.12.1'
           }
           GRADLE
-          # Patch the WebView message bridge to use the AndroidX WebKit API.
-          # android.webkit.WebView does not define WebMessageListener/WebMessage types.
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path("app/src/main/java/com/feedxl/app/MainActivity.java")
-          source = p.read_text(encoding="utf-8")
-          replacements = [
-              ("import android.widget.TextView;\n", "import android.widget.TextView;\n\nimport androidx.webkit.JavaScriptReplyProxy;\nimport androidx.webkit.WebMessageCompat;\nimport androidx.webkit.WebViewCompat;\n"),
-              ("web.addWebMessageListener(", "WebViewCompat.addWebMessageListener(web, "),
-              ("new WebView.WebMessageListener()", "new WebViewCompat.WebMessageListener()"),
-              ("WebView.WebMessage message", "WebMessageCompat message"),
-              ("WebView.WebMessagePort replyProxy", "JavaScriptReplyProxy replyProxy"),
-          ]
-          for old, new in replacements:
-              if old not in source:
-                  raise SystemExit(f"Could not apply WebKit fix: missing pattern {old!r}")
-              source = source.replace(old, new, 1)
-          p.write_text(source, encoding="utf-8")
-          PY
-          # AndroidX WebKit is now used for the optional window.fxNative bridge.
+
+          # AndroidX is required for WebViewCompat's JavaScript message listener.
           if [ -f gradle.properties ]; then
-            sed -i 's/^android\.useAndroidX=false$/android.useAndroidX=true/' gradle.properties
-            grep -q '^android.useAndroidX=true
-          <?xml version="1.0" encoding="utf-8"?>
-          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-              <uses-permission android:name="android.permission.INTERNET" />
-              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-              <application
-                  android:label="@string/app_name"
-                  android:icon="@mipmap/ic_launcher"
-                  android:roundIcon="@mipmap/ic_launcher_round"
-                  android:theme="@style/Theme.FeedXL"
-                  android:hardwareAccelerated="true"
-                  android:usesCleartextTraffic="false"
-                  android:allowBackup="true">
-                  <activity
-                      android:name=".MainActivity"
-                      android:exported="true"
-                      android:launchMode="singleTask"
-                      android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|smallestScreenSize|uiMode">
-                      <intent-filter>
-                          <action android:name="android.intent.action.MAIN" />
-                          <category android:name="android.intent.category.LAUNCHER" />
-                      </intent-filter>
-                  </activity>
-              </application>
-          </manifest>
-          MANIFEST
-          echo "---- extracted file inventory ----"
-          find . -maxdepth 8 -type f -not -path './.git/*' -printf '%s bytes %p\n' | sort
-          echo "---- required source checks ----"
-          test -s settings.gradle || exit 21
-          test -s build.gradle || exit 22
-          test -s app/src/main/AndroidManifest.xml || exit 23
-          test -s app/src/main/java/com/feedxl/app/MainActivity.java || exit 24
-          test -s app/build.gradle || exit 25
-          echo "Project files verified; restored app/build.gradle."
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.10'
-
-      - name: Build debug APK
-        run: gradle assembleDebug --no-daemon --stacktrace
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: FeedXL-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error
- gradle.properties || echo 'android.useAndroidX=true' >> gradle.properties
+            sed -i 's/android.useAndroidX=false/android.useAndroidX=true/' gradle.properties
+            grep -q 'android.useAndroidX=true' gradle.properties || echo 'android.useAndroidX=true' >> gradle.properties
           else
             echo 'android.useAndroidX=true' > gradle.properties
           fi
-          # Restore the manifest too: this entry was zero bytes in the damaged archive.
+
+          # Restore the manifest because the same archive entry was corrupted.
           cat > app/src/main/AndroidManifest.xml <<'MANIFEST'
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
@@ -165,15 +87,34 @@ jobs:
               </application>
           </manifest>
           MANIFEST
-          echo "---- extracted file inventory ----"
-          find . -maxdepth 8 -type f -not -path './.git/*' -printf '%s bytes %p\n' | sort
-          echo "---- required source checks ----"
-          test -s settings.gradle || exit 21
-          test -s build.gradle || exit 22
-          test -s app/src/main/AndroidManifest.xml || exit 23
-          test -s app/src/main/java/com/feedxl/app/MainActivity.java || exit 24
-          test -s app/build.gradle || exit 25
-          echo "Project files verified; restored app/build.gradle."
+
+          # Patch the optional fxNative bridge to use AndroidX's supported WebKit API.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("app/src/main/java/com/feedxl/app/MainActivity.java")
+          source = p.read_text(encoding="utf-8")
+          replacements = [
+              ("import android.widget.TextView;", "import android.widget.TextView;\\nimport androidx.webkit.JavaScriptReplyProxy;\\nimport androidx.webkit.WebMessageCompat;\\nimport androidx.webkit.WebViewCompat;"),
+              ("web.addWebMessageListener(", "WebViewCompat.addWebMessageListener(web, "),
+              ("new WebView.WebMessageListener()", "new WebViewCompat.WebMessageListener()"),
+              ("WebView.WebMessage message", "WebMessageCompat message"),
+              ("WebView.WebMessagePort replyProxy", "JavaScriptReplyProxy replyProxy"),
+          ]
+          for old, new in replacements:
+              if old not in source:
+                  raise SystemExit("Missing pattern while applying WebKit compatibility fix: " + old)
+              source = source.replace(old, new, 1)
+          p.write_text(source, encoding="utf-8")
+          PY
+
+          test -s settings.gradle
+          test -s build.gradle
+          test -s gradle.properties
+          test -s app/src/main/AndroidManifest.xml
+          test -s app/src/main/java/com/feedxl/app/MainActivity.java
+          grep -q 'WebViewCompat.addWebMessageListener' app/src/main/java/com/feedxl/app/MainActivity.java
+          grep -q 'android.useAndroidX=true' gradle.properties
+          echo "Project and WebKit bridge checks passed."
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
