@@ -51,7 +51,30 @@ jobs:
                   targetCompatibility JavaVersion.VERSION_17
               }
           }
+
+          dependencies {
+              implementation 'androidx.webkit:webkit:1.12.1'
+          }
           GRADLE
+          # Patch the WebView message bridge to use the AndroidX WebKit API.
+          # android.webkit.WebView does not define WebMessageListener/WebMessage types.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("app/src/main/java/com/feedxl/app/MainActivity.java")
+          source = p.read_text(encoding="utf-8")
+          replacements = [
+              ("import android.widget.TextView;\n", "import android.widget.TextView;\n\nimport androidx.webkit.JavaScriptReplyProxy;\nimport androidx.webkit.WebMessageCompat;\nimport androidx.webkit.WebViewCompat;\n"),
+              ("web.addWebMessageListener(", "WebViewCompat.addWebMessageListener(web, "),
+              ("new WebView.WebMessageListener()", "new WebViewCompat.WebMessageListener()"),
+              ("WebView.WebMessage message", "WebMessageCompat message"),
+              ("WebView.WebMessagePort replyProxy", "JavaScriptReplyProxy replyProxy"),
+          ]
+          for old, new in replacements:
+              if old not in source:
+                  raise SystemExit(f"Could not apply WebKit fix: missing pattern {old!r}")
+              source = source.replace(old, new, 1)
+          p.write_text(source, encoding="utf-8")
+          PY
           # Restore the manifest too: this entry was zero bytes in the damaged archive.
           cat > app/src/main/AndroidManifest.xml <<'MANIFEST'
           <?xml version="1.0" encoding="utf-8"?>
