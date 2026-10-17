@@ -52,7 +52,7 @@ jobs:
           }
           GRADLE
 
-          # AndroidX is required for WebViewCompat's JavaScript message listener.
+          # Enable AndroidX for WebViewCompat's JavaScript message listener.
           if [ -f gradle.properties ]; then
             sed -i 's/android.useAndroidX=false/android.useAndroidX=true/' gradle.properties
             grep -q 'android.useAndroidX=true' gradle.properties || echo 'android.useAndroidX=true' >> gradle.properties
@@ -88,13 +88,23 @@ jobs:
           </manifest>
           MANIFEST
 
-          # Patch the optional fxNative bridge to use AndroidX's supported WebKit API.
+          # Patch the fxNative bridge to use supported AndroidX WebKit APIs.
           python3 - <<'PY'
           from pathlib import Path
           p = Path("app/src/main/java/com/feedxl/app/MainActivity.java")
-          source = p.read_text(encoding="utf-8")
+          lines = p.read_text(encoding="utf-8").splitlines()
+          import_line = "import android.widget.TextView;"
+          if import_line not in lines:
+              raise SystemExit("Could not find Android imports for WebKit fix")
+          idx = lines.index(import_line) + 1
+          lines[idx:idx] = [
+              "",
+              "import androidx.webkit.JavaScriptReplyProxy;",
+              "import androidx.webkit.WebMessageCompat;",
+              "import androidx.webkit.WebViewCompat;",
+          ]
+          source = chr(10).join(lines)
           replacements = [
-              ("import android.widget.TextView;", "import android.widget.TextView;\\nimport androidx.webkit.JavaScriptReplyProxy;\\nimport androidx.webkit.WebMessageCompat;\\nimport androidx.webkit.WebViewCompat;"),
               ("web.addWebMessageListener(", "WebViewCompat.addWebMessageListener(web, "),
               ("new WebView.WebMessageListener()", "new WebViewCompat.WebMessageListener()"),
               ("WebView.WebMessage message", "WebMessageCompat message"),
@@ -102,9 +112,9 @@ jobs:
           ]
           for old, new in replacements:
               if old not in source:
-                  raise SystemExit("Missing pattern while applying WebKit compatibility fix: " + old)
+                  raise SystemExit("Missing pattern while applying WebKit fix: " + old)
               source = source.replace(old, new, 1)
-          p.write_text(source, encoding="utf-8")
+          p.write_text(source + chr(10), encoding="utf-8")
           PY
 
           test -s settings.gradle
