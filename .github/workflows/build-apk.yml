@@ -14,11 +14,11 @@ jobs:
       - name: Restore Android project from source archive
         shell: bash
         run: |
-          set -euo pipefail
+          set +e
           base64 -d feedxl-source.zip.b64 > /tmp/feedxl-source.zip
-          # The uploaded base64 archive has one damaged compressed entry.
-          # Extract the other files, then restore app/build.gradle explicitly.
-          unzip -o /tmp/feedxl-source.zip -d . || true
+          unzip -o /tmp/feedxl-source.zip -d .
+          unzip_rc=$?
+          echo "unzip exit code: $unzip_rc (known damaged archive entry is being bypassed)"
           mkdir -p app
           cat > app/build.gradle <<'GRADLE'
           plugins {
@@ -52,10 +52,14 @@ jobs:
               }
           }
           GRADLE
-          test -s settings.gradle
-          test -s build.gradle
-          test -s app/src/main/AndroidManifest.xml
-          test -s app/src/main/java/com/feedxl/app/MainActivity.java
+          echo "---- extracted file inventory ----"
+          find . -maxdepth 8 -type f -not -path './.git/*' -printf '%s bytes %p\n' | sort
+          echo "---- required source checks ----"
+          test -s settings.gradle || exit 21
+          test -s build.gradle || exit 22
+          test -s app/src/main/AndroidManifest.xml || exit 23
+          test -s app/src/main/java/com/feedxl/app/MainActivity.java || exit 24
+          test -s app/build.gradle || exit 25
           echo "Project files verified; restored app/build.gradle."
 
       - name: Set up JDK 17
